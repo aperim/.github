@@ -1,0 +1,88 @@
+# CI Quality — Reusable Workflow
+#
+# Runs lint + typecheck for any Aperim Node.js/pnpm product repo.
+# Call from your product repo:
+#
+#   jobs:
+#     quality:
+#       uses: aperim/.github/.github/workflows/ci-quality.yml@main
+#       with:
+#         runner: '["self-hosted","ubuntu-latest","aperim"]'
+#
+# Runner selection: pass runner as a JSON array string for self-hosted, or
+# omit to use the default ubuntu-latest GitHub-hosted runner.
+# Mirrors the USE_GITHUB_RUNNERS pattern from careswap.
+
+name: CI Quality
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to checkout. Defaults to the triggering ref.'
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: >
+          runs-on value as a JSON string. Use '"ubuntu-latest"' for GitHub-hosted
+          or '["self-hosted","ubuntu-latest","aperim"]' for Aperim self-hosted.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      node-version-file:
+        description: 'File containing Node.js version (e.g. .nvmrc).'
+        required: false
+        type: string
+        default: '.nvmrc'
+      lint-command:
+        description: 'pnpm script to run for linting.'
+        required: false
+        type: string
+        default: 'pnpm lint'
+      format-check-command:
+        description: 'pnpm script to check formatting. Set to empty string to skip.'
+        required: false
+        type: string
+        default: 'pnpm format:check'
+      typecheck-command:
+        description: 'pnpm script to run type checking.'
+        required: false
+        type: string
+        default: 'pnpm -r --parallel typecheck'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 15
+    steps:
+      - name: Setup Node.js + pnpm
+        uses: aperim/.github/.github/actions/setup-node-pnpm@main
+        with:
+          ref: ${{ inputs.ref }}
+          node-version-file: ${{ inputs.node-version-file }}
+
+      - name: Check formatting
+        if: inputs.format-check-command != ''
+        run: ${{ inputs.format-check-command }}
+
+      - name: Run linter
+        run: ${{ inputs.lint-command }}
+        env:
+          # Large monorepos require extra heap for ESLint flat config
+          NODE_OPTIONS: --max-old-space-size=4096
+
+  typecheck:
+    name: Type Check
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 15
+    steps:
+      - name: Setup Node.js + pnpm
+        uses: aperim/.github/.github/actions/setup-node-pnpm@main
+        with:
+          ref: ${{ inputs.ref }}
+          node-version-file: ${{ inputs.node-version-file }}
+
+      - name: Run typecheck
+        run: ${{ inputs.typecheck-command }}
