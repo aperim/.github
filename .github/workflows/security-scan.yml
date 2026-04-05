@@ -1,0 +1,143 @@
+# Security Scan — Reusable Workflow
+#
+# Runs CodeQL SAST + pnpm dependency audit for Aperim product repos.
+# Designed to run on push to main, PRs against main, and weekly schedule.
+#
+# Call from your product repo:
+#
+#   jobs:
+#     security:
+#       uses: aperim/.github/.github/workflows/security-scan.yml@main
+#       with:
+#         runner: '["self-hosted","ubuntu-latest","aperim"]'
+#       permissions:
+#         actions: read
+#         contents: read
+#         security-events: write
+#
+# CodeQL note: requires GitHub Code Security (GHAS) enabled on the repository.
+# If not enabled, the CodeQL analyze step continues-on-error so CI is not blocked.
+# Enable at: Settings > Code security > Code scanning > CodeQL analysis.
+#
+# pnpm audit note: audit-allowlist.json can be added to the repo root to suppress
+# known advisory IDs (see README for format).
+
+name: Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to checkout. Defaults to the triggering ref.'
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: >
+          runs-on value as a JSON string. Use '"ubuntu-latest"' for GitHub-hosted
+          or '["self-hosted","ubuntu-latest","aperim"]' for Aperim self-hosted.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      node-version-file:
+        description: 'File containing Node.js version (e.g. .nvmrc).'
+        required: false
+        type: string
+        default: '.nvmrc'
+      codeql-languages:
+        description: 'Comma-separated list of CodeQL languages to analyse.'
+        required: false
+        type: string
+        default: 'javascript-typescript'
+      audit-level:
+        description: 'Minimum severity to fail pnpm audit (low|moderate|high|critical).'
+        required: false
+        type: string
+        default: 'high'
+      run-codeql:
+        description: 'Set to false to skip CodeQL (e.g. repos without GHAS).'
+        required: false
+        type: boolean
+        default: true
+      run-audit:
+        description: 'Set to false to skip pnpm dependency audit.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  codeql:
+    name: CodeQL SAST
+    if: inputs.run-codeql
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    # Block fork PRs from self-hosted runners
+    # (fork PRs have no access to org secrets / self-hosted infrastructure)
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(format('["{0}"]', inputs.codeql-languages)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+          clean: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
+
+      - name: Perform CodeQL Analysis
+        # continue-on-error: SARIF upload fails if GHAS/Code Security is not enabled
+        continue-on-error: true
+        uses: github/codeql-action/analyze@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
+        with:
+          category: '/language:${{ matrix.language }}'
+
+  dependency-audit:
+    name: Dependency Audit
+    if: inputs.run-audit
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 15
+    steps:
+      - name: Setup Node.js + pnpm
+        uses: aperim/.github/.github/actions/setup-node-pnpm@main
+        with:
+          ref: ${{ inputs.ref }}
+          node-version-file: ${{ inputs.node-version-file }}
+
+      - name: Run pnpm audit
+        run: |
+          set +e
+          pnpm audit --audit-level=${{ inputs.audit-level }} 2>&1
+          AUDIT_EXIT=$?
+          set -e
+
+          if [ "$AUDIT_EXIT" -eq 0 ]; then
+            echo "No vulnerabilities found at level ${{ inputs.audit-level }} or above."
+            exit 0
+          fi
+
+          # If an allowlist file exists, warn but don't block.
+          # Format: { "allowlist": ["GHSA-xxxx-yyyy-zzzz"] }
+          ALLOWLIST_FILE="audit-allowlist.json"
+          if [ -f "$ALLOWLIST_FILE" ]; then
+            echo "::warning::Dependency audit found vulnerabilities — check $ALLOWLIST_FILE for known exceptions."
+            exit 0
+          fi
+
+          echo "::error::Dependency audit found vulnerabilities (level: ${{ inputs.audit-level }})."
+          echo "Add an audit-allowlist.json to suppress known advisory exceptions."
+          exit 1
