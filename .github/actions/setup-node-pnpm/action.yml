@@ -1,0 +1,42 @@
+name: 'Setup Node.js + pnpm'
+description: >
+  Composite action: checkout, setup pnpm + Node.js (version from .nvmrc or
+  node-version-file), and install dependencies with frozen lockfile.
+  Uses actions/setup-node built-in pnpm cache to avoid redundant installs.
+
+inputs:
+  ref:
+    description: 'Git ref to checkout (branch, tag, or SHA). Defaults to the triggering ref.'
+    required: false
+    default: ''
+  node-version-file:
+    description: 'File containing the Node.js version (e.g. .nvmrc, .node-version, package.json).'
+    required: false
+    default: '.nvmrc'
+  fetch-depth:
+    description: 'Number of commits to fetch. 0 = full history. Default 1.'
+    required: false
+    default: '1'
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      with:
+        ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+        clean: true
+        fetch-depth: ${{ inputs.fetch-depth }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+      with:
+        node-version-file: ${{ inputs.node-version-file }}
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
