@@ -1,0 +1,76 @@
+# CI Test — Reusable Workflow
+#
+# Runs pnpm tests (Vitest / Jest) for Aperim Node.js/pnpm product repos.
+# Calls aperim/.github/.github/actions/setup-node-pnpm for consistent setup.
+#
+# Usage in product repo:
+#
+#   jobs:
+#     test:
+#       uses: aperim/.github/.github/workflows/ci-test.yml@main
+#       with:
+#         runner: '["self-hosted","ubuntu-latest","aperim"]'
+#         test-command: 'pnpm test:run'
+#
+# For repos with DB service containers (e.g. aegis-command, budget),
+# keep per-repo CI rather than wrapping this — service container setup
+# is not expressible in reusable workflow inputs.
+
+name: CI Test
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to checkout. Defaults to the triggering ref.'
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: >
+          runs-on value as a JSON string. Use '"ubuntu-latest"' for GitHub-hosted
+          or '["self-hosted","ubuntu-latest","aperim"]' for Aperim self-hosted.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      node-version-file:
+        description: 'File containing Node.js version (e.g. .nvmrc).'
+        required: false
+        type: string
+        default: '.nvmrc'
+      test-command:
+        description: 'Command to run tests.'
+        required: false
+        type: string
+        default: 'pnpm test:run'
+      coverage-command:
+        description: 'Command to run tests with coverage. Set to empty string to skip.'
+        required: false
+        type: string
+        default: ''
+      timeout-minutes:
+        description: 'Job timeout in minutes.'
+        required: false
+        type: number
+        default: 30
+    secrets:
+      inherit: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Setup Node.js + pnpm
+        uses: aperim/.github/.github/actions/setup-node-pnpm@main
+        with:
+          ref: ${{ inputs.ref }}
+          node-version-file: ${{ inputs.node-version-file }}
+
+      - name: Run tests
+        run: ${{ inputs.test-command }}
+
+      - name: Run tests with coverage
+        if: inputs.coverage-command != ''
+        run: ${{ inputs.coverage-command }}
