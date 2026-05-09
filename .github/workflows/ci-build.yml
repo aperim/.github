@@ -73,8 +73,6 @@ on:
         required: false
         type: string
         default: 'build'
-    secrets:
-      inherit: false
 
 jobs:
   build:
