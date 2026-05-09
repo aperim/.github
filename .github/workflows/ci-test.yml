@@ -53,8 +53,6 @@ on:
         required: false
         type: number
         default: 30
-    secrets:
-      inherit: false
 
 jobs:
   test:
