@@ -1,0 +1,150 @@
+# Deploy Staging — Reusable Workflow
+#
+# Builds a Docker image, pushes to GHCR, and rolls out to the Aperim DOKS
+# (DigitalOcean Kubernetes, syd1) staging namespace via kubectl.
+#
+# Usage in product repo:
+#
+#   jobs:
+#     deploy-staging:
+#       uses: aperim/.github/.github/workflows/deploy-staging.yml@main
+#       needs: [build]
+#       if: github.ref == 'refs/heads/main'
+#       with:
+#         image-name: itsacademic-api
+#         k8s-namespace: itsacademic-staging
+#       secrets:
+#         KUBECONFIG_STAGING: ${{ secrets.KUBECONFIG_STAGING }}
+#
+# Secrets required in the calling repo:
+#   KUBECONFIG_STAGING — base64-encoded kubeconfig for DOKS staging cluster.
+#                        Generate with: kubectl config view --minify --raw | base64
+
+name: Deploy Staging
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to checkout. Defaults to the triggering ref.'
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: >
+          runs-on value as a JSON string. Use '"ubuntu-latest"' for GitHub-hosted
+          or '["self-hosted","ubuntu-latest","aperim"]' for Aperim self-hosted.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      image-name:
+        description: 'Docker image name (without registry prefix). E.g. itsacademic-api.'
+        required: true
+        type: string
+      image-tag:
+        description: 'Tag to apply to the image. Defaults to the short SHA.'
+        required: false
+        type: string
+        default: ''
+      dockerfile:
+        description: 'Path to the Dockerfile.'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      build-context:
+        description: 'Docker build context path.'
+        required: false
+        type: string
+        default: '.'
+      k8s-namespace:
+        description: 'Kubernetes namespace to deploy into.'
+        required: true
+        type: string
+      k8s-deployment:
+        description: 'Kubernetes deployment name to roll out. Defaults to image-name.'
+        required: false
+        type: string
+        default: ''
+      k8s-container:
+        description: 'Container name within the deployment. Defaults to image-name.'
+        required: false
+        type: string
+        default: ''
+      timeout-minutes:
+        description: 'Job timeout in minutes.'
+        required: false
+        type: number
+        default: 15
+    secrets:
+      KUBECONFIG_STAGING:
+        description: 'Base64-encoded kubeconfig for the DOKS staging cluster.'
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_REPO: aperim
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+          clean: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          TAG="${{ inputs.image-tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_SHA::7}"
+          fi
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@1dc0e8c6c5ab11e66a12e3f37a2c7e80a36de8f8 # v6
+        with:
+          context: ${{ inputs.build-context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}/${{ inputs.image-name }}:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}/${{ inputs.image-name }}:staging-latest
+
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_STAGING }}" | base64 --decode > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@776c3a21bd6bb6a5862c2dd87de47f06fbee855c # v4
+
+      - name: Roll out to staging
+        run: |
+          DEPLOYMENT="${{ inputs.k8s-deployment != '' && inputs.k8s-deployment || inputs.image-name }}"
+          CONTAINER="${{ inputs.k8s-container != '' && inputs.k8s-container || inputs.image-name }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}/${{ inputs.image-name }}:${{ steps.tag.outputs.value }}"
+
+          kubectl set image deployment/"$DEPLOYMENT" \
+            "$CONTAINER"="$IMAGE" \
+            --namespace="${{ inputs.k8s-namespace }}"
+
+          kubectl rollout status deployment/"$DEPLOYMENT" \
+            --namespace="${{ inputs.k8s-namespace }}" \
+            --timeout=5m
