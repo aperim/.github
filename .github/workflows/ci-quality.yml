@@ -86,3 +86,6 @@ jobs:
 
       - name: Run typecheck
         run: ${{ inputs.typecheck-command }}
+        env:
+          # Large TypeScript monorepos require extra heap to avoid OOM (mirrors lint job)
+          NODE_OPTIONS: --max-old-space-size=4096
